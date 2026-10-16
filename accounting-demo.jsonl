@@ -1,0 +1,4 @@
+{"type":"metadata","description":"Synthetic accounting example, not Kalshi observations or evidence of an edge."}
+{"type":"snapshot","ticker":"SYNTHETIC","received_at":0,"book":{"orderbook_fp":{"yes_dollars":[["0.49","100"]],"no_dollars":[["0.50","10"]]}}}
+{"type":"snapshot","ticker":"SYNTHETIC","received_at":2,"book":{"orderbook_fp":{"yes_dollars":[["0.49","100"]],"no_dollars":[["0.50","10"]]}}}
+{"type":"snapshot","ticker":"SYNTHETIC","received_at":4,"book":{"orderbook_fp":{"yes_dollars":[["0.40","100"]],"no_dollars":[["0.59","10"]]}}}
