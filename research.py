@@ -9,7 +9,7 @@ from pathlib import Path
 
 PARAMETERS = ('cash', 'hold', 'latency', 'max_gap', 'threshold', 'max_spread',
               'slippage', 'fee_coefficient', 'fee_quantum')
-SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py')
+SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py', 'evaluation.py')
 
 def digest_file(path: Path) -> str:
     h = hashlib.sha256()
