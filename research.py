@@ -9,7 +9,7 @@ from pathlib import Path
 
 PARAMETERS = ('cash', 'hold', 'latency', 'max_gap', 'threshold', 'max_spread',
               'slippage', 'fee_coefficient', 'fee_quantum', 'fee_model')
-SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py', 'evaluation.py', 'fees.py')
+SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py', 'evaluation.py', 'fees.py', 'batch.py')
 
 def normalized_parameters(settings):
     result = {k: settings[k] for k in PARAMETERS if k != 'fee_model'}
