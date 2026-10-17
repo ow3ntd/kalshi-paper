@@ -47,8 +47,10 @@ def fee(price, coefficient, quantum):
     return (coefficient * price * (1-price) / quantum).to_integral_value(rounding=ROUND_CEILING) * quantum
 
 class Experiment:
-    def __init__(self, args):
+    def __init__(self, args, trade_enabled=True, output=print):
         self.a = args
+        self.trade_enabled = trade_enabled
+        self.output = output
         self.portfolio = Portfolio(D(str(args.cash)))
         self.position = None
         self.pending = None
@@ -100,7 +102,7 @@ class Experiment:
                 self.portfolio.settle(payout, wall)
                 self.position = None
                 if first_settlement:
-                    print(f'{t:.0f} PAPER SETTLEMENT YES payout={payout}', flush=True)
+                    self.output(f'{t:.0f} PAPER SETTLEMENT YES payout={payout}', flush=True)
             if not self.lifecycle.can_trade(wall) or self.portfolio.settlement is not None:
                 self.invalidate()
             self.last = t
@@ -117,6 +119,9 @@ class Experiment:
 
     def step(self, row):
         wall, t = self.clock.observe(row)
+        if not self.trade_enabled:
+            self.last = t
+            return
         # Legacy files without lifecycle events retain snapshot-only behavior.
         if self.clock.discontinuities or self.portfolio.settlement is not None or (self.lifecycle.ticker is not None and
                 (not self.lifecycle.can_trade(wall) or t-self.lifecycle_elapsed > self.a.max_gap)):
@@ -145,13 +150,13 @@ class Experiment:
             if action == 'buy' and aq >= 1 and 0 < p < 1 and self.cash >= p+f:
                 self.portfolio.apply(Fill('buy', p, D(1), f, wall))
                 self.position = (p+f, t)
-                print(f'{t:.0f} PAPER BUY 1 YES @ {p} fee={f}', flush=True)
+                self.output(f'{t:.0f} PAPER BUY 1 YES @ {p} fee={f}', flush=True)
             elif action == 'sell' and self.position and bq >= 1 and 0 < p < 1:
                 pnl = p-f-self.position[0]
                 self.portfolio.apply(Fill('sell', p, D(1), f, wall))
                 self.completed.append(float(pnl))
                 self.position = None
-                print(f'{t:.0f} PAPER SELL 1 YES @ {p} net_pnl={pnl}', flush=True)
+                self.output(f'{t:.0f} PAPER SELL 1 YES @ {p} net_pnl={pnl}', flush=True)
         if self.pending is None:
             if self.position and t-self.position[1] >= self.a.hold:
                 self.pending = ('sell', t+self.a.latency)
@@ -191,14 +196,22 @@ def main():
     selection.add_argument('--series', help='Automatically choose earliest-closing active binary market')
     recording.add_argument('--file', help='New recording path; otherwise generated under recordings/')
     recording.add_argument('--minutes', type=float, default=5)
+    recording.add_argument('--until-settlement', action='store_true',
+                           help='Follow the selected contract until a final payout; replaces --minutes')
+    recording.add_argument('--max-wait-minutes', type=float, default=30,
+                           help='Total collection cap with --until-settlement, including trading (default: 30)')
     recording.add_argument('--interval', type=float, default=2)
     recording.add_argument('--min-remaining-seconds', type=float, default=300,
                            help='Minimum lifetime for automatic --series selection (default: 300; 0 allows any unexpired market)')
     diagnostic = sub.add_parser('quality', help='Inspect recording quality without a strategy')
     diagnostic.add_argument('--file', required=True)
-    for name in ('run', 'replay'):
+    for name in ('run', 'replay', 'evaluate'):
         s = sub.add_parser(name)
-        s.add_argument('--file', required=True, help='New JSONL recording (run) or existing recording (replay)')
+        if name == 'evaluate':
+            s.add_argument('--files', nargs='+', required=True, help='Recordings to evaluate as a fixed cohort')
+            s.add_argument('--synthetic', action='store_true', help='Label this entire evaluation as a mechanics demo')
+        else:
+            s.add_argument('--file', required=True, help='New JSONL recording (run) or existing recording (replay)')
         s.add_argument('--report', help='New report path; existing reports are never overwritten')
         s.add_argument('--fee-coefficient', type=float, required=True, help='Verify for selected market; e.g. 0.07 is an ASSUMPTION')
         s.add_argument('--fee-quantum', type=float, default=.01, help='Conservative per-fill rounding assumption')
@@ -222,6 +235,8 @@ def main():
             p.error('interval must be finite and >=1 second; minutes finite and positive')
         if not 0 <= a.min_remaining_seconds < float('inf'):
             p.error('min-remaining-seconds must be finite and nonnegative')
+        if not 0 < a.max_wait_minutes < float('inf'):
+            p.error('max-wait-minutes must be finite and positive')
         try:
             collect(a, get)
         except (OSError, ValueError, KeyError) as error:
@@ -252,6 +267,19 @@ def main():
             p.error(field+' must be finite and positive')
     if not 0 <= a.threshold <= 1 or not 0 <= a.slippage < 1 or not 0 <= a.fee_coefficient < float('inf'):
         p.error('Invalid threshold, slippage, or fee coefficient')
+    if a.command == 'evaluate':
+        from evaluation import evaluate, save_report, overview
+        try:
+            report_path = Path(a.report) if a.report else Path('reports')/f'evaluation-{uuid.uuid4().hex}.json'
+            if report_path.exists():
+                raise FileExistsError(f'Report already exists: {report_path}')
+            result = evaluate(a.files, a, Experiment, synthetic=a.synthetic)
+            save_report(result, report_path)
+        except (OSError, ValueError, KeyError) as error:
+            p.exit(2, f'Evaluation error: {error}\n')
+        print(overview(result))
+        print('Evaluation report:', report_path)
+        return
     e = Experiment(a)
     path = Path(a.file)
     report_path = Path(a.report) if a.report else path.parent/'reports'/f'{path.stem}-{uuid.uuid4().hex}.json'

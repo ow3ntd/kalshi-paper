@@ -231,12 +231,16 @@ def collect(args, getter, clock=time, output=print):
     if path.exists():
         raise FileExistsError(f'Recording already exists: {path}')
     start = clock.monotonic()
-    deadline, heartbeat = start+args.minutes*60, start
+    until_settlement = getattr(args, 'until_settlement', False)
+    limit_seconds = (getattr(args, 'max_wait_minutes', 30) if until_settlement else args.minutes)*60
+    deadline, heartbeat = start+limit_seconds, start
     seq = snapshots = failures = error_count = 0
     life = Lifecycle()
-    stop_reason = 'duration_limit'
+    stop_reason = 'settlement_timeout' if until_settlement else 'duration_limit'
     endpoint = '/markets/'+quote(ticker, safe='')
     output(f'Collecting {ticker}; no simulated or real orders.\nRecording: {path}', flush=True)
+    if until_settlement:
+        output(f'Following this contract through final payout; total time limit {limit_seconds/60:g} minutes.', flush=True)
     with path.open('x') as f:
         def write(event):
             nonlocal seq
@@ -309,7 +313,9 @@ def collect(args, getter, clock=time, output=print):
             stop_reason = 'interrupted'
             output('Stopped; completed events preserved.', flush=True)
         write({'type': 'recording_end', 'ticker': ticker, 'received_at': clock.time(),
-               'reason': stop_reason, 'requested_duration_seconds': args.minutes*60})
+               'reason': stop_reason, 'requested_duration_seconds': limit_seconds})
+    if until_settlement and stop_reason != 'final_settlement':
+        output('Final payout was not observed. This session is incomplete; its data has been preserved.', flush=True)
     summary = quality(path)
     summary_path = Path(str(path)+'.quality.json')
     with summary_path.open('x') as f:

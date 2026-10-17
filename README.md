@@ -44,6 +44,73 @@ Public requests require internet access. The collector backs off after data-fetc
 retains invalid decoded responses as error evidence. Quality reports describe coverage,
 one-sided books, spreads, request durations, gaps, and wall/monotonic clock disagreement.
 
+## Collect through settlement and evaluate a batch
+
+For a session that follows one contract through its final payout:
+
+```sh
+python3 paper.py collect --series KXBTC15M --until-settlement --max-wait-minutes 30 --min-remaining-seconds 300
+```
+
+This mode replaces the five-minute recording limit. The 30-minute cap starts when recording
+begins and includes trading and waiting for settlement. The collector keeps polling market
+status after trading closes. Only an observed, non-provisional final payout completes it;
+`determined` alone is insufficient. Timeout or Ctrl+C preserves an incomplete session.
+Keep the terminal running and the computer awake. No eligible market means the command
+exits; rerun it when a contract meets the selection criteria. Each run generates a unique filename.
+
+After collection finishes, evaluate all the recordings in that directory with fixed parameters:
+
+```sh
+python3 paper.py evaluate --files recordings/*.jsonl --fee-coefficient 0.07
+```
+
+The fee coefficient remains an illustrative assumption. All strategy flags from `replay`,
+including `--slippage`, `--latency`, `--hold`, and `--threshold`, also work with `evaluate`.
+It prints a compact comparison and saves the full report under `reports/` using a unique name.
+No-trade holds the same starting cash, earns no interest, and places no orders. The same
+recorded observations are delivered to both portfolios. Every session starts with fresh
+paper cash; summed P&L is not a compounded or concurrently funded portfolio return.
+
+Read the report in this order:
+
+1. `included_sessions`, `excluded_sessions`, and each session's `exclusion_reasons`.
+   Eligibility requires snapshots while a market was observed active, a final payout,
+   resolved inventory, and the quality checks below. Complete describes the recorded window
+   through settlement; collection may begin after market opening.
+2. `included_strategy_net_pnl` versus `included_no_trade_net_pnl` (zero).
+   `included_excess_net_pnl` is the difference, after simulated fees and slippage.
+   These monetary summary fields use exact decimal strings; `null` means unavailable.
+3. `whole_cohort_net_pnl`. It is `null` if any submitted session is excluded. The included
+   subset can show a gain while the entire batch remains unresolved; report both counts.
+4. Fees, fills, positive/negative/flat sessions, and per-session `exposure_seconds` and
+   `max_inventory_cost_dollars`. Zero trades are retained as a valid zero result when complete.
+5. Per-session `sampled_max_drawdown_before_exit_costs` and `unknown_equity_observations`.
+   This indicative bid-mark drawdown omits future exit costs, gaps, and unobserved prices.
+   `session_close_pnl_drawdown` uses only included final session P&Ls in end-time order;
+   it does not measure intraday or overlapping-portfolio risk.
+
+Fixed exclusions: missing final payout, unresolved inventory, no active snapshots, invalid
+recordings, detected clock jumps, recorded data errors, locked/crossed books, snapshot gaps
+above `--max-gap`, and duplicate recordings or repeated market tickers. Every member of a
+duplicate group is excluded, so file order cannot choose the better result. Exclusions are
+not evidence of zero P&L and are never silently removed from the report.
+
+The report records source/data hashes, parameters, runtime, and an evaluation fingerprint.
+Keep the initial parameters fixed on new sessions. Choosing settings after inspecting their
+profits turns those sessions into development data; evaluate the next version on new sessions.
+
+For offline mechanics checks, run these **separately** (they share a synthetic ticker):
+
+```sh
+python3 paper.py evaluate --files settlement-demo.jsonl --fee-coefficient 0.07 --synthetic
+python3 paper.py evaluate --files settlement-loss-demo.jsonl --fee-coefficient 0.07 --synthetic
+python3 paper.py evaluate --files settlement-pending-demo.jsonl --fee-coefficient 0.07 --synthetic
+```
+
+Expected: +$0.479, -$0.521, and an excluded incomplete session, respectively. The no-trade
+baseline has zero P&L. These fixtures verify mechanics and provide no evidence of an edge.
+
 ## Reproduce an experiment
 
 ```sh
@@ -65,6 +132,7 @@ Legacy reports without provenance cannot use the comparison command.
 | `lifecycle.py` | Trading eligibility and final-payout interpretation |
 | `portfolio.py` | Decimal cash, cost basis, inventory, realized/unrealized P&L, and settlement |
 | `research.py` | Replay validation, experiment fingerprints, and result comparison |
+| `evaluation.py` | Complete-session eligibility, no-trade comparison, risk summaries, and cohort provenance |
 | `clocks.py` | Separate elapsed strategy time from calendar lifecycle time |
 | `paper.py` | CLI and baseline strategy orchestration |
 
@@ -101,8 +169,9 @@ explanations are in [the walkthrough](docs/walkthrough.md).
 
 ## Research direction
 
-Add authenticated WebSocket recording and sequence-gap recovery; then evaluate fixed baselines on unseen sessions with realistic
-cost sensitivity and uncertainty estimates. These are planned work, not implemented capabilities.
+Gather more complete sessions with fixed parameters, verify market-specific fees, and evaluate
+cost sensitivity on new sessions. Add authenticated WebSocket recording, sequence-gap recovery,
+and uncertainty estimates once data coverage supports them. These are planned capabilities.
 
 ## References
 
