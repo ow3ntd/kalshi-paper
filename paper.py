@@ -8,13 +8,14 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal
 from pathlib import Path
 from portfolio import Fill, Portfolio
 from lifecycle import Lifecycle
 from research import replay_recording, provenance, digest_file, compare_reports
 from collector import collect, quality, selection_details
 from clocks import EventClock
+from fees import legacy_fee as fee, single_fill_fee, fee_parameters, BALANCE_PRECISION, inspect_fees
 
 BASE = 'https://external-api.kalshi.com/trade-api/v2'
 D = Decimal
@@ -42,16 +43,18 @@ def book(raw):
     y, n = sum(q for _, q in yes[:3]), sum(q for _, q in no[:3])
     return bid, ask, bq, aq, float((y-n)/(y+n))
 
-def fee(price, coefficient, quantum):
-    # Configurable research assumption, NOT automatic market fee discovery.
-    return (coefficient * price * (1-price) / quantum).to_integral_value(rounding=ROUND_CEILING) * quantum
-
 class Experiment:
     def __init__(self, args, trade_enabled=True, output=print):
         self.a = args
         self.trade_enabled = trade_enabled
         self.output = output
         self.portfolio = Portfolio(D(str(args.cash)))
+        self.fee_model = getattr(args, 'fee_model', 'legacy')
+        if self.fee_model not in ('legacy', *BALANCE_PRECISION):
+            raise ValueError('Unknown fee model')
+        if self.fee_model != 'legacy' and self.cash % BALANCE_PRECISION[self.fee_model]:
+            raise ValueError('Starting cash must align to the selected balance precision')
+        self.fee_details = []
         self.position = None
         self.pending = None
         self.completed = []
@@ -146,17 +149,25 @@ class Experiment:
             action = self.pending[0]
             self.pending = None
             p = ask+slip if action == 'buy' else bid-slip
-            f = fee(p, D(str(self.a.fee_coefficient)), D(str(self.a.fee_quantum)))
+            components = (single_fill_fee(action, p, D(str(self.a.fee_coefficient)),
+                          self.fee_model, D(str(self.a.fee_quantum))) if 0 < p < 1 else None)
+            f = components['net_fee'] if components else D(0)
+            filled = False
             if action == 'buy' and aq >= 1 and 0 < p < 1 and self.cash >= p+f:
                 self.portfolio.apply(Fill('buy', p, D(1), f, wall))
                 self.position = (p+f, t)
+                filled = True
                 self.output(f'{t:.0f} PAPER BUY 1 YES @ {p} fee={f}', flush=True)
             elif action == 'sell' and self.position and bq >= 1 and 0 < p < 1:
                 pnl = p-f-self.position[0]
                 self.portfolio.apply(Fill('sell', p, D(1), f, wall))
                 self.completed.append(float(pnl))
                 self.position = None
+                filled = True
                 self.output(f'{t:.0f} PAPER SELL 1 YES @ {p} net_pnl={pnl}', flush=True)
+            if filled:
+                self.fee_details.append({'order_number': len(self.portfolio.fills), 'side': action,
+                    'timestamp': wall, **{k: str(v) if v is not None else None for k, v in components.items()}})
         if self.pending is None:
             if self.position and t-self.position[1] >= self.a.hold:
                 self.pending = ('sell', t+self.a.latency)
@@ -164,7 +175,9 @@ class Experiment:
                 self.pending = ('buy', t+self.a.latency)
 
     def report(self):
-        return {'report_version': 4,
+        return {'report_version': 5,
+                'fee_assumptions': fee_parameters(vars(self.a)),
+                'fee_details': self.fee_details,
                 'strategy_clock': self.clock.mode,
                 'clock_discontinuities': self.clock.discontinuities,
                 'trading_suspended_for_clock': bool(self.clock.discontinuities),
@@ -190,6 +203,11 @@ def main():
     comparison = sub.add_parser('compare', help='Compare two versioned experiment reports')
     comparison.add_argument('left')
     comparison.add_argument('right')
+    fee_check = sub.add_parser('fees', help='Save a dated public fee-metadata check; no account or orders')
+    fee_selection = fee_check.add_mutually_exclusive_group(required=True)
+    fee_selection.add_argument('--series')
+    fee_selection.add_argument('--ticker', help='Also check this market, its event overrides, and event fee changes')
+    fee_check.add_argument('--report', help='New evidence report path; existing files are never overwritten')
     recording = sub.add_parser('collect', help='Record public data without running a strategy')
     selection = recording.add_mutually_exclusive_group(required=True)
     selection.add_argument('--ticker')
@@ -213,8 +231,10 @@ def main():
         else:
             s.add_argument('--file', required=True, help='New JSONL recording (run) or existing recording (replay)')
         s.add_argument('--report', help='New report path; existing reports are never overwritten')
-        s.add_argument('--fee-coefficient', type=float, required=True, help='Verify for selected market; e.g. 0.07 is an ASSUMPTION')
-        s.add_argument('--fee-quantum', type=float, default=.01, help='Conservative per-fill rounding assumption')
+        s.add_argument('--fee-coefficient', type=float, required=True, help='Explicit effective taker coefficient (base rate times multiplier); verify market and date')
+        s.add_argument('--fee-model', choices=['legacy', 'direct', 'non-direct'], default='legacy',
+                       help='legacy reproduces fee-only rounding; direct/non-direct model documented cash alignment')
+        s.add_argument('--fee-quantum', type=float, help='Legacy fee-only rounding increment (default .01); unavailable with direct/non-direct')
         s.add_argument('--cash', type=float, default=1000)
         s.add_argument('--hold', type=float, default=60)
         s.add_argument('--latency', type=float, default=1)
@@ -227,6 +247,19 @@ def main():
             s.add_argument('--interval', type=float, default=2)
             s.add_argument('--minutes', type=float, default=30)
     a = p.parse_args()
+    if a.command == 'fees':
+        from evaluation import save_report
+        target = Path(a.report) if a.report else Path('reports')/f'fee-check-{uuid.uuid4().hex}.json'
+        try:
+            if target.exists():
+                raise FileExistsError(f'Report already exists: {target}')
+            result = inspect_fees(get, series_ticker=a.series, ticker=a.ticker)
+            save_report(result, target)
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as error:
+            p.exit(2, f'Fee check error: {error}\n')
+        print(json.dumps({k: v for k, v in result.items() if k != 'evidence'}, indent=2))
+        print('Fee evidence report:', target)
+        return
     if a.command == 'quality':
         print(json.dumps(quality(a.file), indent=2))
         return
@@ -262,11 +295,17 @@ def main():
                 print(m['ticker'], '|', m.get('title', ''), '| bid', m.get('yes_bid_dollars'), 'ask', m.get('yes_ask_dollars'))
         print('First page only. Use --series to narrow the selection.')
         return
+    if a.fee_model != 'legacy' and a.fee_quantum is not None:
+        p.error('fee-quantum applies only to the legacy model; direct/non-direct use fixed balance precision')
+    if a.fee_quantum is None:
+        a.fee_quantum = .01
     for field in ('cash', 'hold', 'latency', 'max_gap', 'fee_quantum', 'max_spread'):
         if not 0 < getattr(a, field) < float('inf'):
             p.error(field+' must be finite and positive')
     if not 0 <= a.threshold <= 1 or not 0 <= a.slippage < 1 or not 0 <= a.fee_coefficient < float('inf'):
         p.error('Invalid threshold, slippage, or fee coefficient')
+    if a.fee_model != 'legacy' and D(str(a.cash)) % BALANCE_PRECISION[a.fee_model]:
+        p.error('Starting cash must align to the selected balance precision')
     if a.command == 'evaluate':
         from evaluation import evaluate, save_report, overview
         try:

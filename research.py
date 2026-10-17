@@ -8,8 +8,15 @@ from decimal import getcontext
 from pathlib import Path
 
 PARAMETERS = ('cash', 'hold', 'latency', 'max_gap', 'threshold', 'max_spread',
-              'slippage', 'fee_coefficient', 'fee_quantum')
-SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py', 'evaluation.py')
+              'slippage', 'fee_coefficient', 'fee_quantum', 'fee_model')
+SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py', 'evaluation.py', 'fees.py')
+
+def normalized_parameters(settings):
+    result = {k: settings[k] for k in PARAMETERS if k != 'fee_model'}
+    result['fee_model'] = settings.get('fee_model', 'legacy')
+    if result['fee_model'] != 'legacy':
+        result['fee_quantum'] = None  # Not used by the cash-alignment models.
+    return result
 
 def digest_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -73,7 +80,7 @@ def replay_recording(path: Path, engine) -> str:
 def provenance(data_sha256: str, settings: dict) -> dict:
     root = Path(__file__).resolve().parent
     identity = {'data_sha256': data_sha256,
-                'parameters': {k: settings[k] for k in PARAMETERS},
+                'parameters': normalized_parameters(settings),
                 'source_sha256': {name: digest_file(root/name) for name in SOURCES},
                 'runtime': {'python': platform.python_version(),
                             'decimal_precision': getcontext().prec,
