@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from pathlib import Path
 
 from collector import quality, quotes
-from research import PARAMETERS, provenance, replay_recording
+from research import normalized_parameters, provenance, replay_recording
 
 
 class SessionReplay:
@@ -135,7 +135,7 @@ def evaluate(paths, args, engine_factory, synthetic=False):
     return {'evaluation_version': 1, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
         'evaluation_fingerprint': fingerprint, 'identity': identity,
         'dataset_kind': 'synthetic_mechanics_demo' if synthetic else 'research_recordings',
-        'parameters': {k: getattr(args, k) for k in PARAMETERS},
+        'parameters': normalized_parameters(vars(args)),
         'summary': {'submitted_sessions': len(sessions), 'included_sessions': len(included),
             'excluded_sessions': len(sessions)-len(included), 'exclusion_counts': dict(reasons),
             'included_strategy_net_pnl': str(total) if total is not None else None,
@@ -172,6 +172,7 @@ def save_report(report, path):
 def overview(report):
     summary = report['summary']
     lines = [f"Evaluation: {report['dataset_kind']}",
+             f"Fees: {report['parameters']['fee_model']} model; effective taker coefficient {report['parameters']['fee_coefficient']}",
              f"Sessions: {summary['included_sessions']} included / {summary['submitted_sessions']} submitted"]
     for s in report['sessions']:
         if s['included']:

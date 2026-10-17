@@ -19,7 +19,9 @@ python3 paper.py replay --file settlement-demo.jsonl --fee-coefficient 0.07
 
 The synthetic winning settlement ends with cash $1,000.479, zero open contracts, and
 realized P&L $0.479. Losing and pending-settlement fixtures are also included.
-**The fee coefficient is an illustrative assumption**, not verified for every Kalshi market.
+The example uses the `legacy` fee model so its expected numbers remain stable. A coefficient
+alone does not specify rounding or account category. See [fee verification](docs/fees.md)
+for the dated KXBTC15M check and documented cash-alignment models.
 
 ## Record public data
 
@@ -65,7 +67,9 @@ After collection finishes, evaluate all the recordings in that directory with fi
 python3 paper.py evaluate --files recordings/*.jsonl --fee-coefficient 0.07
 ```
 
-The fee coefficient remains an illustrative assumption. All strategy flags from `replay`,
+This command retains legacy fee rounding. Select `--fee-model direct` or `--fee-model non-direct`
+explicitly to model the corresponding documented balance precision after verifying the
+coefficient for the market and date. All strategy flags from `replay`,
 including `--slippage`, `--latency`, `--hold`, and `--threshold`, also work with `evaluate`.
 It prints a compact comparison and saves the full report under `reports/` using a unique name.
 No-trade holds the same starting cash, earns no interest, and places no orders. The same
@@ -133,6 +137,7 @@ Legacy reports without provenance cannot use the comparison command.
 | `portfolio.py` | Decimal cash, cost basis, inventory, realized/unrealized P&L, and settlement |
 | `research.py` | Replay validation, experiment fingerprints, and result comparison |
 | `evaluation.py` | Complete-session eligibility, no-trade comparison, risk summaries, and cohort provenance |
+| `fees.py` | Public fee metadata inspection and single-fill taker fee rounding |
 | `clocks.py` | Separate elapsed strategy time from calendar lifecycle time |
 | `paper.py` | CLI and baseline strategy orchestration |
 
@@ -154,7 +159,10 @@ alone does not establish that those hosted jobs have passed; check the repositor
 
 - Two-second snapshots miss intermediate events and cannot establish queue priority or maker fills.
 - Displayed prices/depth do not guarantee executable liquidity. Hypothetical fills remain approximate.
-- Fees and slippage are configurable assumptions; settlement currently assumes no added fee.
+- Fee coefficients and account category are explicit research inputs; slippage remains assumed.
+  `legacy` rounds the fee alone and exists for reproducibility. `direct`/`non-direct` implement
+  documented single-fill cash alignment. Each simulated order has one fill; multi-fill
+  accumulators, maker executions, and broker add-ons are not modeled. Settlement fee is zero.
 - Replay uses monotonic time for strategy durations when available and calendar time for lifecycle
   checks. A detected clock discontinuity suspends simulated trading for the rest of that session;
   inventory can still settle on an observed final payout. Reports identify affected sessions.
@@ -169,7 +177,7 @@ explanations are in [the walkthrough](docs/walkthrough.md).
 
 ## Research direction
 
-Gather more complete sessions with fixed parameters, verify market-specific fees, and evaluate
+Gather more complete sessions with fixed parameters, refresh market-specific fee checks, and evaluate
 cost sensitivity on new sessions. Add authenticated WebSocket recording, sequence-gap recovery,
 and uncertainty estimates once data coverage supports them. These are planned capabilities.
 
