@@ -14,6 +14,7 @@ from portfolio import Fill, Portfolio
 from lifecycle import Lifecycle
 from research import replay_recording, provenance, digest_file, compare_reports
 from collector import collect, quality, selection_details
+from clocks import EventClock
 
 BASE = 'https://external-api.kalshi.com/trade-api/v2'
 D = Decimal
@@ -56,6 +57,8 @@ class Experiment:
         self.mark = None
         self.mark_at = None
         self.lifecycle = Lifecycle()
+        self.clock = EventClock()
+        self.lifecycle_elapsed = None
 
     def invalidate(self):
         self.pending = None
@@ -65,30 +68,40 @@ class Experiment:
     def ingest(self, row):
         """Same event processing for live recording and offline replay."""
         kind = row.get('type')
+        if kind not in ('market', 'snapshot', 'error', 'recording_end'):
+            return
+        wall, t = self.clock.observe(row)
+        if self.clock.discontinuities:
+            # Calendar deadlines cannot be repaired without an authoritative clock anchor.
+            # Preserve/settle inventory, but suspend simulated trading for this session.
+            self.invalidate()
         if kind == 'error':
             self.invalidate()
+            self.last = t
             return
         if kind not in ('market', 'snapshot'):
             return
-        t = row['received_at']
         if self.last is not None and t < self.last:
             raise ValueError('Events must be chronological')
         if self.last is not None and t-self.last > self.a.max_gap:
             self.invalidate()
-        if t-row.get('requested_at', t) > self.a.max_gap:
+        duration = row.get('request_duration_ms')
+        request_seconds = duration/1000 if duration is not None else wall-row.get('requested_at', wall)
+        if request_seconds > self.a.max_gap or request_seconds < 0:
             self.invalidate()
             return
         if kind == 'market':
             if row.get('ticker') != row['market']['ticker']:
                 raise ValueError('Market event ticker mismatch')
-            payout = self.lifecycle.update(row['market'], t)
+            payout = self.lifecycle.update(row['market'], wall)
+            self.lifecycle_elapsed = t
             if payout is not None:
                 first_settlement = self.portfolio.settlement is None
-                self.portfolio.settle(payout, t)
+                self.portfolio.settle(payout, wall)
                 self.position = None
                 if first_settlement:
                     print(f'{t:.0f} PAPER SETTLEMENT YES payout={payout}', flush=True)
-            if not self.lifecycle.can_trade(t) or self.portfolio.settlement is not None:
+            if not self.lifecycle.can_trade(wall) or self.portfolio.settlement is not None:
                 self.invalidate()
             self.last = t
         else:
@@ -103,10 +116,10 @@ class Experiment:
         return self.portfolio.fees
 
     def step(self, row):
-        t = row['received_at']
+        wall, t = self.clock.observe(row)
         # Legacy files without lifecycle events retain snapshot-only behavior.
-        if self.portfolio.settlement is not None or (self.lifecycle.ticker is not None and
-                (not self.lifecycle.can_trade(t) or t-self.lifecycle.last_observed > self.a.max_gap)):
+        if self.clock.discontinuities or self.portfolio.settlement is not None or (self.lifecycle.ticker is not None and
+                (not self.lifecycle.can_trade(wall) or t-self.lifecycle_elapsed > self.a.max_gap)):
             self.invalidate()
             self.last = t
             return
@@ -122,7 +135,7 @@ class Experiment:
             return
         bid, ask, bq, aq, imbalance = b
         self.mark = bid if bq >= 1 else None
-        self.mark_at = t if self.mark is not None else None
+        self.mark_at = wall if self.mark is not None else None
         slip = D(str(self.a.slippage))
         if self.pending and t >= self.pending[1]:
             action = self.pending[0]
@@ -130,12 +143,12 @@ class Experiment:
             p = ask+slip if action == 'buy' else bid-slip
             f = fee(p, D(str(self.a.fee_coefficient)), D(str(self.a.fee_quantum)))
             if action == 'buy' and aq >= 1 and 0 < p < 1 and self.cash >= p+f:
-                self.portfolio.apply(Fill('buy', p, D(1), f, t))
+                self.portfolio.apply(Fill('buy', p, D(1), f, wall))
                 self.position = (p+f, t)
                 print(f'{t:.0f} PAPER BUY 1 YES @ {p} fee={f}', flush=True)
             elif action == 'sell' and self.position and bq >= 1 and 0 < p < 1:
                 pnl = p-f-self.position[0]
-                self.portfolio.apply(Fill('sell', p, D(1), f, t))
+                self.portfolio.apply(Fill('sell', p, D(1), f, wall))
                 self.completed.append(float(pnl))
                 self.position = None
                 print(f'{t:.0f} PAPER SELL 1 YES @ {p} net_pnl={pnl}', flush=True)
@@ -146,7 +159,10 @@ class Experiment:
                 self.pending = ('buy', t+self.a.latency)
 
     def report(self):
-        return {'report_version': 3,
+        return {'report_version': 4,
+                'strategy_clock': self.clock.mode,
+                'clock_discontinuities': self.clock.discontinuities,
+                'trading_suspended_for_clock': bool(self.clock.discontinuities),
                 'market_status': self.lifecycle.status,
                 'lifecycle_observed_at': self.lifecycle.last_observed,
                 'lifecycle_tracking': self.lifecycle.ticker is not None,
@@ -157,7 +173,7 @@ class Experiment:
                 'fills': [{'side': f.side, 'price': str(f.price), 'quantity': str(f.quantity),
                            'fee': str(f.fee), 'timestamp': f.timestamp} for f in self.portfolio.fills],
                 'pending_action': self.pending[0] if self.pending else None,
-                'warning': 'Snapshot fills are hypothetical. Unsettled inventory may have unknown value. Settlement credits only an observed final payout; no settlement fee assumed. No automatic rollover. Legacy recordings without lifecycle events cannot model expiration.'}
+                'warning': 'Snapshot fills are hypothetical. Clock discontinuities suspend trading for the remainder of the session; observed final settlement remains supported. Unsettled inventory may have unknown value. No settlement fee assumed. Legacy wall-only recordings cannot provide monotonic duration guarantees.'}
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)

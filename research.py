@@ -3,12 +3,13 @@ import hashlib
 import json
 import math
 import platform
+from clocks import EventClock
 from decimal import getcontext
 from pathlib import Path
 
 PARAMETERS = ('cash', 'hold', 'latency', 'max_gap', 'threshold', 'max_spread',
               'slippage', 'fee_coefficient', 'fee_quantum')
-SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py')
+SOURCES = ('paper.py', 'portfolio.py', 'lifecycle.py', 'research.py', 'collector.py', 'clocks.py')
 
 def digest_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -23,6 +24,7 @@ def replay_recording(path: Path, engine) -> str:
     previous = -math.inf
     ticker = None
     previous_elapsed = None
+    clock = EventClock()
     with path.open('rb') as f:
         for number, raw in enumerate(f, 1):
             digest.update(raw)
@@ -36,7 +38,7 @@ def replay_recording(path: Path, engine) -> str:
                 observed = row.get('received_at', row.get('at'))
                 if not isinstance(observed, (int, float)) or not math.isfinite(observed):
                     raise ValueError('Missing or invalid observation time')
-                if observed < previous:
+                if observed < previous and row.get('elapsed_s') is None:
                     raise ValueError('Events are out of chronological order')
                 elapsed = row.get('elapsed_s')
                 if elapsed is not None:
@@ -45,10 +47,12 @@ def replay_recording(path: Path, engine) -> str:
                     if previous_elapsed is not None:
                         if elapsed < previous_elapsed:
                             raise ValueError('Monotonic elapsed time decreased')
-                        if abs((observed-previous)-(elapsed-previous_elapsed)) > .1:
-                            raise ValueError('Wall-clock discontinuity; inspect with quality before replay. Elapsed-time execution is not yet supported.')
+                clock.observe(row)
                 requested = row.get('requested_at', observed)
-                if not isinstance(requested, (int, float)) or not math.isfinite(requested) or requested > observed:
+                duration = row.get('request_duration_ms')
+                if duration is not None and (not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0):
+                    raise ValueError('Invalid request duration')
+                if not isinstance(requested, (int, float)) or not math.isfinite(requested) or (requested > observed and duration is None):
                     raise ValueError('Invalid request time')
                 if kind != 'error':
                     event_ticker = row.get('ticker')
