@@ -65,6 +65,7 @@ Legacy reports without provenance cannot use the comparison command.
 | `lifecycle.py` | Trading eligibility and final-payout interpretation |
 | `portfolio.py` | Decimal cash, cost basis, inventory, realized/unrealized P&L, and settlement |
 | `research.py` | Replay validation, experiment fingerprints, and result comparison |
+| `clocks.py` | Separate elapsed strategy time from calendar lifecycle time |
 | `paper.py` | CLI and baseline strategy orchestration |
 
 The baseline buys one YES contract when top-three-level book imbalance exceeds a threshold
@@ -86,7 +87,10 @@ alone does not establish that those hosted jobs have passed; check the repositor
 - Two-second snapshots miss intermediate events and cannot establish queue priority or maker fills.
 - Displayed prices/depth do not guarantee executable liquidity. Hypothetical fills remain approximate.
 - Fees and slippage are configurable assumptions; settlement currently assumes no added fee.
-- Replay uses wall time for strategy holding periods and rejects detected wall/monotonic discontinuities.
+- Replay uses monotonic time for strategy durations when available and calendar time for lifecycle
+  checks. A detected clock discontinuity suspends simulated trading for the rest of that session;
+  inventory can still settle on an observed final payout. Reports identify affected sessions.
+- Legacy recordings without elapsed timestamps use wall time; mixed clock modes are rejected.
 - One market and long YES inventory only; no portfolio resume, automatic rollover, or WebSocket feed.
 - Open inventory can remain unresolved when a recording ends. Realized P&L alone is not total return.
 - No statistical evidence of an edge or live-money execution path is provided.
@@ -97,8 +101,7 @@ explanations are in [the walkthrough](docs/walkthrough.md).
 
 ## Research direction
 
-Separate elapsed-time strategy execution from lifecycle timestamps; add authenticated WebSocket
-recording and sequence-gap recovery; then evaluate fixed baselines on unseen sessions with realistic
+Add authenticated WebSocket recording and sequence-gap recovery; then evaluate fixed baselines on unseen sessions with realistic
 cost sensitivity and uncertainty estimates. These are planned work, not implemented capabilities.
 
 ## References

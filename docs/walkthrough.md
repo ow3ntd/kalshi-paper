@@ -231,7 +231,7 @@ or sufficient depth. One-sided books remain valid observations but cannot supply
 Zero-quantity levels do not count as quotes. These three book counts partition all snapshots.
 The quality command also computes them for existing recordings without modifying the recording
 or its saved quality report.
-Local wall-clock corrections are flagged by quality; replay refuses detected discontinuities.
+Local wall-clock corrections are flagged by quality; replay suspends trading after detected discontinuities.
 Preserve and inspect those sessions instead of treating wall timestamps as reliable holding periods.
 
 The diagnostics do not pass or fail a strategy. Check first that snapshots > 0, errors are understood,
@@ -301,11 +301,11 @@ New collector_version 2 recordings append recording_end and measure the full rec
 Polling stops when the monotonic deadline is reached, but an in-flight request or scheduling delay
 can overshoot it. Reading a recording and writing its quality report happen after the end marker.
 
-Replay still uses wall timestamps for lifecycle and holding-period decisions. It now refuses
-detected wall/monotonic discontinuities instead of silently distorting strategy execution. Quality
+Replay uses wall timestamps for lifecycle and monotonic time for strategy durations when available.
+It suspends trading for the session after detected wall/monotonic discontinuities. Quality
 can diagnose backward wall jumps if ordered monotonic timestamps are present; legacy wall-only
-files still require chronological timestamps. Monotonic strategy execution with separate lifecycle
-time is a future change; this milestone does not claim to correct affected historical P&L.
+files still require chronological timestamps. This does not reconstruct an authoritative calendar
+clock or claim to correct historical P&L after a clock anomaly.
 
 For another live check:
 
@@ -316,3 +316,30 @@ python3 paper.py quality --file live-04.jsonl
 
 Look for full duration near 300s, an end marker, and clock-step count 0. New collection still
 needs an eligible market; no qualifying market means no recording is created.
+
+## Milestone 6: strategy elapsed time and conservative anomaly handling
+
+`clocks.py` selects monotonic elapsed_s when present. Pending-order latency, holding periods,
+observation gaps, and lifecycle-information age use that clock. Calendar close/expiration checks,
+settlement observations, and fill journal timestamps keep their wall-clock meaning. Missing
+elapsed_s in every event selects legacy wall time; switching clock modes mid-recording fails.
+Measured request_duration_ms controls slow-response exclusion when recorded, instead of a wall
+subtraction that can be distorted by clock changes.
+
+On a detected clock discontinuity (>0.1s disagreement between adjacent clock deltas), pending
+instructions are canceled and trading remains suspended for that recording. No forced sale or
+invented liquidation value is used. Existing inventory may settle when a final market update
+arrives; otherwise total P&L can remain unknown. New reports expose strategy_clock,
+clock_discontinuities, trading_suspended_for_clock, and report_version 4.
+
+```sh
+python3 -m unittest discover -v
+python3 paper.py replay --file live-02.jsonl --fee-coefficient 0.07
+python3 paper.py replay --file live-03.jsonl --fee-coefficient 0.07
+```
+
+The original local sessions are not in Git. With the current baseline and assumed fees, live-01
+had no trades; live-02 had one purchased contract settle for a loss of $0.211. Live-03 suspends
+at its clock anomaly with one unsold contract, so its partial realized P&L is not total performance.
+These few sessions do not establish profitability. Preserve the fixed baseline and collect new,
+unseen sessions before evaluating any strategy changes.

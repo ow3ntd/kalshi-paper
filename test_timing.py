@@ -55,14 +55,16 @@ class TimingTests(unittest.TestCase):
             self.assertTrue(result['recording_end_observed'])
             replay_recording(path, test_paper.Tests().engine())
 
-    def test_replay_refuses_wall_jump_instead_of_distorting_holding_period(self):
+    def test_replay_reports_wall_jump_and_suspends_trading(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'jump.jsonl'
-            path.write_text(''.join(json.dumps(r)+'\n' for r in [
-                {'type': 'error', 'at': 1000, 'elapsed_s': 0},
-                {'type': 'error', 'at': 1027, 'elapsed_s': 2}]))
-            with self.assertRaisesRegex(ValueError, 'Wall-clock discontinuity'):
-                replay_recording(path, test_paper.Tests().engine())
+            rows = [dict(test_paper.row(1000), type='snapshot', ticker='TEST', elapsed_s=0),
+                    dict(test_paper.row(1027), type='snapshot', ticker='TEST', elapsed_s=2)]
+            path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            engine = test_paper.Tests().engine()
+            replay_recording(path, engine)
+            self.assertTrue(engine.report()['trading_suspended_for_clock'])
+            self.assertIsNone(engine.position)
 
 if __name__ == '__main__':
     unittest.main()
