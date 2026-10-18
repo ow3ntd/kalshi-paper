@@ -223,10 +223,21 @@ def main():
                            help='Minimum lifetime for automatic --series selection (default: 300; 0 allows any unexpired market)')
     diagnostic = sub.add_parser('quality', help='Inspect recording quality without a strategy')
     diagnostic.add_argument('--file', required=True)
+    batch = sub.add_parser('batch', help='Record consecutive distinct markets, bounded by attempts and elapsed time')
+    batch.add_argument('--series', required=True)
+    batch.add_argument('--sessions', type=int, default=3, help='Maximum attempted sessions, including timeouts/failures (default 3)')
+    batch.add_argument('--max-minutes', type=float, default=60, help='Total batch time limit, including discovery and settlement waits')
+    batch.add_argument('--session-max-minutes', type=float, default=25, help='Maximum recording time per contract')
+    batch.add_argument('--min-remaining-seconds', type=float, default=300)
+    batch.add_argument('--interval', type=float, default=2)
+    batch.add_argument('--retry-seconds', type=float, default=15, help='Discovery retry interval; errors use capped backoff')
+    batch.add_argument('--directory', help='New batch directory; generated under recordings/ if omitted')
     for name in ('run', 'replay', 'evaluate'):
         s = sub.add_parser(name)
         if name == 'evaluate':
-            s.add_argument('--files', nargs='+', required=True, help='Recordings to evaluate as a fixed cohort')
+            inputs = s.add_mutually_exclusive_group(required=True)
+            inputs.add_argument('--files', nargs='+', help='Recordings to evaluate as a fixed cohort')
+            inputs.add_argument('--batch', help='Stopped batch directory; includes every attempted session')
             s.add_argument('--synthetic', action='store_true', help='Label this entire evaluation as a mechanics demo')
         else:
             s.add_argument('--file', required=True, help='New JSONL recording (run) or existing recording (replay)')
@@ -247,6 +258,13 @@ def main():
             s.add_argument('--interval', type=float, default=2)
             s.add_argument('--minutes', type=float, default=30)
     a = p.parse_args()
+    if a.command == 'batch':
+        from batch import collect_batch
+        try:
+            collect_batch(a, get)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            p.exit(2, f'Batch error: {error}\n')
+        return
     if a.command == 'fees':
         from evaluation import save_report
         target = Path(a.report) if a.report else Path('reports')/f'fee-check-{uuid.uuid4().hex}.json'
@@ -312,7 +330,11 @@ def main():
             report_path = Path(a.report) if a.report else Path('reports')/f'evaluation-{uuid.uuid4().hex}.json'
             if report_path.exists():
                 raise FileExistsError(f'Report already exists: {report_path}')
-            result = evaluate(a.files, a, Experiment, synthetic=a.synthetic)
+            paths, context = a.files, None
+            if a.batch:
+                from batch import batch_inputs
+                paths, context = batch_inputs(a.batch)
+            result = evaluate(paths, a, Experiment, synthetic=a.synthetic, batch_context=context)
             save_report(result, report_path)
         except (OSError, ValueError, KeyError) as error:
             p.exit(2, f'Evaluation error: {error}\n')

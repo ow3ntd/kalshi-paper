@@ -117,6 +117,25 @@ baseline has zero P&L. These fixtures verify mechanics and provide no evidence o
 
 ## Reproduce an experiment
 
+For sequential collection across contracts, see [the batch collector walkthrough](docs/batch.md).
+For example, attempt up to three distinct contracts within one hour:
+
+```sh
+python3 paper.py batch --series KXBTC15M --sessions 3 --max-minutes 60 --session-max-minutes 25 --directory recordings/batch-01
+```
+
+The directory must be new. Collection waits for eligible markets, saves fee checks and each
+recording, and stops at the attempt limit, total time limit, or Ctrl+C. Evaluate the stopped
+batch manifest to retain failed/missing attempts in the cohort:
+
+```sh
+python3 paper.py evaluate --batch recordings/batch-01 --fee-coefficient 0.07 --fee-model direct
+```
+
+Here `direct` is an explicit account scenario; verify the applicable category and fee terms.
+Timeouts count as attempts. Sequential collection can miss windows while awaiting settlement.
+Batch manifests distinguish observed final payout from evaluation eligibility.
+
 ```sh
 python3 paper.py replay --file settlement-demo.jsonl --fee-coefficient 0.07 --report reports/a.json
 python3 paper.py replay --file settlement-demo.jsonl --fee-coefficient 0.07 --report reports/b.json
@@ -133,6 +152,7 @@ Legacy reports without provenance cannot use the comparison command.
 | Module | Responsibility |
 |---|---|
 | `collector.py` | Market selection, public snapshot recording, recovery, and quality diagnostics |
+| `batch.py` | Bounded sequential collection, discovery retries, fee evidence, and attempt manifests |
 | `lifecycle.py` | Trading eligibility and final-payout interpretation |
 | `portfolio.py` | Decimal cash, cost basis, inventory, realized/unrealized P&L, and settlement |
 | `research.py` | Replay validation, experiment fingerprints, and result comparison |
@@ -167,7 +187,8 @@ alone does not establish that those hosted jobs have passed; check the repositor
   checks. A detected clock discontinuity suspends simulated trading for the rest of that session;
   inventory can still settle on an observed final payout. Reports identify affected sessions.
 - Legacy recordings without elapsed timestamps use wall time; mixed clock modes are rejected.
-- One market and long YES inventory only; no portfolio resume, automatic rollover, or WebSocket feed.
+- Single-market, long-YES strategy evaluation. Batch recording rolls between distinct contracts
+  sequentially; no concurrent collection, batch resume, portfolio resume, or WebSocket feed.
 - Open inventory can remain unresolved when a recording ends. Realized P&L alone is not total return.
 - No statistical evidence of an edge or live-money execution path is provided.
 

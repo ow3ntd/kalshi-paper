@@ -1,6 +1,21 @@
 """Keep strategy durations separate from calendar timestamps."""
 import math
 
+class ClockDiscontinuity(Exception):
+    """Stop live collection after suspend or an untrusted calendar-clock change."""
+
+class RecordingClockGuard:
+    def __init__(self, clock):
+        self.clock = clock
+        self.wall, self.elapsed = clock.time(), clock.monotonic()
+
+    def check(self):
+        wall, elapsed = self.clock.time(), self.clock.monotonic()
+        difference = (wall-self.wall)-(elapsed-self.elapsed)
+        self.wall, self.elapsed = wall, elapsed
+        if abs(difference) > .1:
+            raise ClockDiscontinuity(f'Wall/monotonic clock divergence: {difference:.6f}s; possible sleep or clock adjustment')
+
 class EventClock:
     def __init__(self):
         self.mode = None

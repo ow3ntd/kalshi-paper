@@ -55,7 +55,7 @@ class SessionReplay:
             self.drawdown = max(self.drawdown, self.peak-equity)
 
 
-def evaluate(paths, args, engine_factory, synthetic=False):
+def evaluate(paths, args, engine_factory, synthetic=False, batch_context=None):
     """No tuning or winner selection; retain all exclusions in the submitted cohort."""
     sessions = []
     for name in paths:
@@ -127,12 +127,14 @@ def evaluate(paths, args, engine_factory, synthetic=False):
         drawdown = max(drawdown, peak-cash_curve)
     reasons = Counter(r for s in sessions for r in s['exclusion_reasons'])
     identity = {'policy_version': 1, 'synthetic': synthetic,
+                'batch': batch_context,
                 'inputs': [{'data_sha256': s.get('data_sha256'), 'included': s['included'],
                             'exclusion_reasons': s['exclusion_reasons'], 'error': s.get('error')}
                            for s in sessions],
                 'implementation': provenance('cohort', vars(args))}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()
-    return {'evaluation_version': 1, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
+    return {'evaluation_version': 2, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
+        'batch': batch_context,
         'evaluation_fingerprint': fingerprint, 'identity': identity,
         'dataset_kind': 'synthetic_mechanics_demo' if synthetic else 'research_recordings',
         'parameters': normalized_parameters(vars(args)),
