@@ -12,6 +12,28 @@ From the repository root:
 python3 paper.py batch --series KXBTC15M --sessions 3 --max-minutes 60 --session-max-minutes 25 --min-remaining-seconds 300 --directory recordings/batch-01
 ```
 
+On macOS, prevent idle sleep for the lifetime of the command:
+
+```sh
+caffeinate -is python3 paper.py batch --series KXBTC15M --sessions 3 --max-minutes 60 --session-max-minutes 25 --min-remaining-seconds 300 --interval 3 --directory recordings/batch-02
+```
+
+Keep the lid open, power connected, and the network available. `-i` prevents idle system
+sleep; `-s` also requests system sleep prevention on AC power. These assertions end with
+the command. They do not repair network outages or guarantee protection from lid closure,
+forced sleep, shutdown, or loss of power. The display can turn off.
+
+The live recorder and batch discovery now stop on wall/monotonic divergence greater than
+0.1 seconds (`clock_discontinuity`). This catches suspend intervals that the platform's
+monotonic clock does not count, as well as calendar clock adjustments. The partial recording
+and manifest remain evidence; the batch does not continue to another contract. Existing
+replay quality exclusions stay in force. A stopped batch is not necessarily settled.
+
+HTTP 429 responses wait at least 30 seconds before retrying. Valid `Retry-After` seconds or
+HTTP dates can extend that delay, bounded by the remaining run budget. Backoff starts after
+the failed response. Discovery and fee lookups also honor this delay. A recovered error still
+appears in the quality report and does not become eligible merely because a later request worked.
+
 - `--sessions 3` limits attempted contracts, including failures and timeouts.
 - `--max-minutes 60` limits the entire run using monotonic time, including discovery and fee
   lookups. An in-flight HTTP request can finish after the deadline (the client has a 10-second

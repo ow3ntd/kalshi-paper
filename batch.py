@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collector import collect, choose_market, quality, NoEligibleMarket
+from collector import collect, choose_market, quality, NoEligibleMarket, retry_delay
+from clocks import RecordingClockGuard, ClockDiscontinuity
 from fees import inspect_fees
 
 
@@ -39,6 +40,7 @@ def collect_batch(args, getter, clock=time, output=print):
     (root/'sessions').mkdir()
     (root/'fees').mkdir()
     start = clock.monotonic()
+    guard = RecordingClockGuard(clock)
     deadline = start+args.max_minutes*60
     state = {'batch_version': 1, 'status': 'running', 'stop_reason': None,
              'started_at_utc': datetime.fromtimestamp(clock.time(), timezone.utc).isoformat(),
@@ -61,18 +63,23 @@ def collect_batch(args, getter, clock=time, output=print):
             temporary.replace(root/'batch.json')
 
         def bounded_get(path, **params):
+            guard.check()
             # Check every discovery/fee page, not just the start of an API operation.
             if clock.monotonic() >= deadline:
                 raise BatchDeadline()
-            return getter(path, **params)
+            result = getter(path, **params)
+            guard.check()
+            return result
 
         def pause(seconds):
             clock.sleep(min(seconds, max(0, deadline-clock.monotonic())))
+            guard.check()
 
         checkpoint('batch_started')
         failures = 0
         try:
             while len(state['sessions']) < args.sessions:
+                guard.check()
                 if clock.monotonic() >= deadline:
                     reason = 'batch_time_limit'
                     break
@@ -89,6 +96,7 @@ def collect_batch(args, getter, clock=time, output=print):
                     failures += 1
                     state['selection_errors'] += 1
                     delay = min(60, args.retry_seconds*2**min(failures-1, 4))
+                    delay = retry_delay(error, delay, clock.time())
                     checkpoint('selection_error', message=str(error), retry_seconds=delay)
                     output(f'BATCH discovery error: {error}; retry in {delay:g}s', flush=True)
                     pause(delay)
@@ -113,6 +121,7 @@ def collect_batch(args, getter, clock=time, output=print):
                     active['fee_check_error'] = str(error)
                     checkpoint('fee_check_error', number=number, message=str(error))
                     output(f'BATCH fee check unavailable: {error}; continuing data collection.', flush=True)
+                    pause(retry_delay(error, 0, clock.time()))
                 else:
                     fee_path = f'fees/{number:04d}.json'
                     with (root/fee_path).open('x') as f:
@@ -142,12 +151,16 @@ def collect_batch(args, getter, clock=time, output=print):
                 output(f"BATCH session={number} outcome={active['status']} snapshots={q['snapshots']} errors={q['errors']}", flush=True)
                 outcome = active['status']
                 active = None
-                if outcome == 'interrupted':
-                    reason = 'interrupted'
+                if outcome in ('interrupted', 'clock_discontinuity'):
+                    reason = outcome
                     break
                 if outcome == 'batch_time_limit':
                     reason = 'batch_time_limit'
                     break
+        except ClockDiscontinuity as error:
+            reason = 'clock_discontinuity'
+            checkpoint('clock_discontinuity', message=str(error))
+            output(f'BATCH stopped: {error}', flush=True)
         except BatchDeadline:
             reason = 'batch_time_limit'
         except KeyboardInterrupt:

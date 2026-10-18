@@ -63,8 +63,10 @@ class CollectorTests(unittest.TestCase):
                 if len(calls) == 1:
                     raise HTTPError(endpoint, 429, 'rate limited', {}, None)
                 return normal(endpoint, **params)
-            collect(self.args(path), get, clock, lambda *a, **k: None)
-            self.assertGreaterEqual(calls[1]-calls[0], 4)
+            args = self.args(path)
+            args.minutes = 32/60
+            collect(args, get, clock, lambda *a, **k: None)
+            self.assertGreaterEqual(calls[1]-calls[0], 30)
             self.assertEqual(quality(path)['errors'], 1)
             self.assertEqual(quality(path)['snapshots'], 1)
 

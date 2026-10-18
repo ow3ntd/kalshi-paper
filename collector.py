@@ -9,6 +9,25 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
 from lifecycle import Lifecycle, timestamp
+from clocks import RecordingClockGuard, ClockDiscontinuity
+from email.utils import parsedate_to_datetime
+
+def retry_delay(error, default, now):
+    """Respect Retry-After, with a conservative minimum for rate limits."""
+    delay = max(default, 30) if getattr(error, 'code', None) == 429 else default
+    headers = getattr(error, 'headers', None)
+    value = headers.get('Retry-After') if headers else None
+    if value:
+        try:
+            seconds = float(value)
+        except (ValueError, TypeError):
+            try:
+                seconds = parsedate_to_datetime(value).timestamp()-now
+            except (ValueError, TypeError, OverflowError):
+                seconds = 0
+        if math.isfinite(seconds):
+            delay = max(delay, seconds)
+    return delay
 
 def quotes(raw):
     """Validate price levels; a one-sided book is valid data, not a zero price."""
@@ -234,6 +253,7 @@ def collect(args, getter, clock=time, output=print, *, stop_at=None, show_summar
     if path.exists():
         raise FileExistsError(f'Recording already exists: {path}')
     start = clock.monotonic()
+    guard = RecordingClockGuard(clock)
     until_settlement = getattr(args, 'until_settlement', False)
     limit_seconds = (getattr(args, 'max_wait_minutes', 30) if until_settlement else args.minutes)*60
     deadline, heartbeat = start+limit_seconds, start
@@ -256,6 +276,7 @@ def collect(args, getter, clock=time, output=print, *, stop_at=None, show_summar
             f.flush()
 
         def request(suffix, kind):
+            guard.check()
             requested, begin = clock.time(), clock.monotonic()
             try:
                 payload = getter(endpoint+suffix, **({'depth': 10} if suffix else {}))
@@ -282,12 +303,14 @@ def collect(args, getter, clock=time, output=print, *, stop_at=None, show_summar
                        'message': str(error), 'raw_response': payload})
                 raise RecordedError('Invalid response saved as error evidence') from error
             write(event)
+            guard.check()
             return event
 
         write({'type': 'metadata', 'collector_version': 2, 'ticker': ticker,
                'settings': vars(args), 'created_at': clock.time()})
         try:
             while clock.monotonic() < deadline:
+                guard.check()
                 cycle = clock.monotonic()
                 delay = args.interval
                 try:
@@ -309,12 +332,21 @@ def collect(args, getter, clock=time, output=print, *, stop_at=None, show_summar
                                'category': 'http_error' if isinstance(error, DataRequestError) else 'invalid_response',
                                'http_status': getattr(error, 'code', None), 'message': str(error)})
                     delay = min(30, args.interval*2**min(failures, 4))
+                    delay = retry_delay(error, delay, clock.time())
+                    guard.check()
+                    cycle = clock.monotonic()  # Backoff starts after the failed response.
                     output(f'Data error ({error}); retry after backoff.', flush=True)
                 if clock.monotonic() >= heartbeat:
                     output(f'HEARTBEAT status={life.status} snapshots={snapshots} errors={error_count} elapsed={clock.monotonic()-start:.0f}s', flush=True)
                     heartbeat = clock.monotonic()+10
                 clock.sleep(min(max(0, deadline-clock.monotonic()),
                                 max(0, delay-(clock.monotonic()-cycle))))
+            guard.check()
+        except ClockDiscontinuity as error:
+            stop_reason = 'clock_discontinuity'
+            write({'type': 'error', 'at': clock.time(), 'ticker': ticker,
+                   'category': 'clock_discontinuity', 'message': str(error)})
+            output(f'Stopped collection: {error}', flush=True)
         except KeyboardInterrupt:
             stop_reason = 'interrupted'
             output('Stopped; completed events preserved.', flush=True)
@@ -339,3 +371,4 @@ class DataRequestError(ValueError):
     def __init__(self, error):
         super().__init__(str(error))
         self.code = getattr(error, 'code', None)
+        self.headers = getattr(error, 'headers', None)
